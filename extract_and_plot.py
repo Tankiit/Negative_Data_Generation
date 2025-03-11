@@ -47,6 +47,18 @@ def sample_features(label_to_features, n_examples_per_class):
             sampled_labels.extend([label] * len(features))
     return torch.stack(sampled_features), torch.tensor(sampled_labels)
 
+def plot_features(features, labels):
+    tsne = TSNE(n_components=2, random_state=42)
+    features_2d = tsne.fit_transform(features)
+    plt.figure(figsize=(10, 8))
+    scatter = plt.scatter(features_2d[:, 0], features_2d[:, 1], c=labels, cmap='tab10')
+    plt.legend(handles=scatter.legend_elements()[0], labels=set(labels.tolist()))
+    plt.title('t-SNE of CIFAR-10 Features')
+    plt.xlabel('t-SNE Component 1')
+    plt.ylabel('t-SNE Component 2')
+    plt.show()
+
+
 if __name__ == '__main__':
     # 1. Load CIFAR-10 (ID) 
     transform = transforms.Compose([transforms.ToTensor(), 
@@ -75,7 +87,9 @@ if __name__ == '__main__':
     # After training, we assume model is well-trained on CIFAR-10.
     labels_to_features = extract_embeddings(model, device, test_loader)
     features,labels = sample_features(labels_to_features, n_examples_per_class)
-    pdb.set_trace()
+
+    plot_features(features, labels)
+    
    
     mu = features.mean(dim=0)
     diff = features - mu
