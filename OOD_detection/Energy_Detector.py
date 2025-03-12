@@ -532,46 +532,63 @@ def create_feature_extractor(model_name='resnet18', num_classes=10, pretrained_k
     return model
 
 def get_transform(dataset_name, model_type=None):
-    """Get appropriate transforms based on dataset and model type"""
-    if model_type == 'wideresnet' or model_type is not None:  # pytorch_ood models
-        transform = transforms.Compose([
-            transforms.Resize(32),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[x / 255.0 for x in [125.3, 123.0, 113.9]],
-                std=[x / 255.0 for x in [63.0, 62.1, 66.7]]
-            )
-        ])
-    else:  # torchvision models
-        transform = transforms.Compose([
-            transforms.Resize(32),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        ])
+    """
+    Get appropriate transforms based on dataset and model type.
+    Ensures consistent 32x32 image size across all datasets.
+    
+    Args:
+        dataset_name: Name of the dataset (cifar10, cifar100, svhn, mnist, etc.)
+        model_type: Type of model (wideresnet or None for torchvision models)
+    """
+    # Set normalization parameters based on model type
+    if model_type == 'wideresnet' or model_type is not None:
+        mean = [x / 255.0 for x in [125.3, 123.0, 113.9]]
+        std = [x / 255.0 for x in [63.0, 62.1, 66.7]]
+    else:
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
 
-    # Dataset-specific modifications
-    if dataset_name.lower() in ['mnist', 'fashionmnist']:
-        base_transform = transforms.Compose([
+    dataset_name = dataset_name.lower()
+    
+    # Base transforms to ensure consistent size
+    if dataset_name == 'dtd':
+        # DTD images can have varying sizes and aspect ratios
+        size_transforms = [
+            transforms.Resize(36),  # Slightly larger for better cropping
+            transforms.CenterCrop(32),  # Then crop to exact size
+        ]
+    elif dataset_name == 'tiny-imagenet':
+        # Tiny-ImageNet images are originally 64x64
+        size_transforms = [
             transforms.Resize(32),
+            transforms.CenterCrop(32),
+        ]
+    elif dataset_name == 'lsun':
+        # LSUN images can be large and varied
+        size_transforms = [
+            transforms.Resize(36),  # Slightly larger
+            transforms.CenterCrop(32),  # Then crop to exact size
+        ]
+    else:
+        # For CIFAR, SVHN, MNIST, FashionMNIST
+        size_transforms = [
+            transforms.Resize((32, 32)),  # Force exact size
+        ]
+    
+    # Compose the final transform
+    if dataset_name in ['mnist', 'fashionmnist']:
+        transform = transforms.Compose([
+            *size_transforms,
             transforms.ToTensor(),
-            transforms.Lambda(lambda x: x.repeat(3, 1, 1))  # Convert to 3 channels
+            transforms.Lambda(lambda x: x.repeat(3, 1, 1)),  # Convert to RGB
+            transforms.Normalize(mean=mean, std=std)
         ])
-        
-        if model_type == 'wideresnet' or model_type is not None:
-            norm_transform = transforms.Normalize(
-                mean=[x / 255.0 for x in [125.3, 123.0, 113.9]],
-                std=[x / 255.0 for x in [63.0, 62.1, 66.7]]
-            )
-        else:
-            norm_transform = transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        
-        transform = transforms.Compose([base_transform, norm_transform])
+    else:
+        transform = transforms.Compose([
+            *size_transforms,
+            transforms.ToTensor(),
+            transforms.Normalize(mean=mean, std=std)
+        ])
     
     return transform
 

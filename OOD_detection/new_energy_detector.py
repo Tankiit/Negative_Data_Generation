@@ -531,66 +531,49 @@ def create_feature_extractor(model_name='resnet18', num_classes=10, pretrained_k
     
     return model
 
+class SquarePad:
+    def __call__(self, image):
+        w, h = image.size
+        max_wh = max(w, h)
+        hp = (max_wh - w) // 2
+        vp = (max_wh - h) // 2
+        padding = (hp, vp, max_wh - w - hp, max_wh - h - vp)
+        return transforms.functional.pad(image, padding, 0, 'constant')
+
 def get_transform(dataset_name, model_type=None):
     """Get appropriate transforms based on dataset and model type"""
-    if model_type == 'wideresnet' or model_type is not None:  # pytorch_ood models
+    # Define normalization based on model type
+    if model_type == 'wideresnet' or model_type is not None:
+        mean = [x / 255.0 for x in [125.3, 123.0, 113.9]]
+        std = [x / 255.0 for x in [63.0, 62.1, 66.7]]
+    else:
+        mean = [0.485, 0.456, 0.406]
+        std = [0.229, 0.224, 0.225]
+
+    dataset_name = dataset_name.lower()
+    if dataset_name == 'dtd':
+        # For DTD: pad to square, then resize
         transform = transforms.Compose([
-            transforms.Resize(32),
+            SquarePad(),
+            transforms.Resize((32, 32)),
             transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[x / 255.0 for x in [125.3, 123.0, 113.9]],
-                std=[x / 255.0 for x in [63.0, 62.1, 66.7]]
-            )
+            transforms.Normalize(mean=mean, std=std)
         ])
-    else:  # torchvision models
+    elif dataset_name in ['mnist', 'fashionmnist']:
+        # For grayscale datasets
         transform = transforms.Compose([
-            transforms.Resize(32),
+            transforms.Resize((32, 32)),
             transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
+            transforms.Lambda(lambda x: x.repeat(3, 1, 1)),
+            transforms.Normalize(mean=mean, std=std)
         ])
-    if dataset_name.lower() == 'dtd':
-        if model_type == 'wideresnet' or model_type is not None:
-            base_transform = transforms.Compose([
-                transforms.Resize((32, 32)),  # Force exact size
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[x / 255.0 for x in [125.3, 123.0, 113.9]],
-                    std=[x / 255.0 for x in [63.0, 62.1, 66.7]]
-                )
-            ])
-        else:
-            base_transform = transforms.Compose([
-                transforms.Resize((32, 32)),  # Force exact size
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225]
-                )
-            ])
-          
-    # Dataset-specific modifications
-    if dataset_name.lower() in ['mnist', 'fashionmnist']:
-        base_transform = transforms.Compose([
-            transforms.Resize(32),
+    else:
+        # For all other datasets (CIFAR, SVHN, etc.)
+        transform = transforms.Compose([
+            transforms.Resize((32, 32)),
             transforms.ToTensor(),
-            transforms.Lambda(lambda x: x.repeat(3, 1, 1))  # Convert to 3 channels
+            transforms.Normalize(mean=mean, std=std)
         ])
-        
-        if model_type == 'wideresnet' or model_type is not None:
-            norm_transform = transforms.Normalize(
-                mean=[x / 255.0 for x in [125.3, 123.0, 113.9]],
-                std=[x / 255.0 for x in [63.0, 62.1, 66.7]]
-            )
-        else:
-            norm_transform = transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
-        
-        transform = transforms.Compose([base_transform, norm_transform])
     
     return transform
 
