@@ -13,6 +13,7 @@ import argparse
 import os
 from collections import defaultdict
 from pytorch_ood.model import WideResNet
+from tiny_imagenet import TinyImageNet
 
 class DROEnergyDetector(nn.Module):
     def __init__(
@@ -204,6 +205,7 @@ class DROEnergyDetector(nn.Module):
             print(f"\nEpoch {epoch + 1}/{num_epochs}:")
             train_loss = 0.0
             train_acc = 0.0
+            nb_data = 0
             
             progress_bar = tqdm(train_loader, desc=f"Epoch {epoch + 1}/{num_epochs}")
             for batch_idx, (inputs, targets) in enumerate(progress_bar):
@@ -232,12 +234,13 @@ class DROEnergyDetector(nn.Module):
                 
                 # Update metrics
                 train_loss += loss.item()
-                _, predicted = logits.max(1)
-                train_acc += predicted.eq(targets).sum().item()
+                predicted = logits.argmax(-1)
+                train_acc += torch.count_nonzero(predicted == targets).sum().item()
+                nb_data += len(targets)
                 
                 # Update progress bar
                 avg_loss = train_loss / (batch_idx + 1)
-                avg_acc = 100. * train_acc / ((batch_idx + 1) * inputs.size(0))
+                avg_acc = 100. * train_acc / nb_data
                 progress_bar.set_postfix({
                     'loss': f"{avg_loss:.3f}",
                     'acc': f"{avg_acc:.2f}%"
@@ -257,7 +260,7 @@ class DROEnergyDetector(nn.Module):
                         
                         # Forward pass
                         features = self.extract_hierarchical_features(inputs)
-                        logits = self.classifier(features)
+                        logits: torch.Tensor = self.classifier(features)
                         energy_scores = self.compute_energy(logits)
                         
                         # Compute loss
@@ -267,8 +270,8 @@ class DROEnergyDetector(nn.Module):
                         
                         # Update metrics
                         val_loss += loss.item()
-                        _, predicted = logits.max(1)
-                        val_acc += predicted.eq(targets).sum().item()
+                        predicted = logits.argmax(-1)
+                        val_acc += torch.count_nonzero(predicted == targets).sum().item()
                         val_energy_scores.extend(energy_scores.cpu().numpy())
                 
                 # Calculate validation metrics
@@ -599,7 +602,8 @@ def load_dataset(dataset_name, data_dir, train=True, model_type=None):
         dataset = torchvision.datasets.FashionMNIST(root=data_dir, train=train, download=True, transform=transform)
         num_classes = 10
     elif dataset_name.lower() == 'tiny-imagenet':
-        dataset = TinyImageNet(root=os.path.join(data_dir, 'tiny-imagenet-200'), train=train, transform=transform)
+        split = 'train' if train else 'val'
+        dataset = TinyImageNet(root=os.path.join(data_dir, 'tiny-imagenet-200'), split=split, download=True, transform=transform)
         num_classes = 200
     elif dataset_name.lower() == 'dtd':
          # For DTD dataset, we'll use a more explicit approach to handle variable-sized images
@@ -649,10 +653,11 @@ def parse_args():
     parser = argparse.ArgumentParser(description='DRO Energy-based Out-of-Distribution Detection')
     
     # Dataset arguments
-    parser.add_argument('--dataset-dir', type=str, default='/Users/tanmoy/research/data',
+    parser.add_argument('--dataset-dir', type=str, default='/home/tanmoy/research/data',
                         help='Directory where datasets are stored/downloaded (default: ./data)')
     parser.add_argument('--id-dataset', type=str, default='cifar10',
-                        choices=['cifar10', 'cifar100', 'svhn'],
+                        choices=['cifar10', 'cifar100', 'svhn', 'mnist', 'fashionmnist',
+                                'tiny-imagenet', 'dtd', 'lsun', 'gaussian', 'uniform'],
                         help='In-distribution dataset (default: cifar10)')
     parser.add_argument('--ood-dataset', type=str, default='svhn',
                         choices=['cifar10', 'cifar100', 'svhn', 'mnist', 'fashionmnist',
