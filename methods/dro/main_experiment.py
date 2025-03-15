@@ -1001,7 +1001,7 @@ def main():
     np.random.seed(42)
     
     # Configuration
-    data_root = '/Users/tanmoy/research/data'
+    data_root = './data'
     model_configs = [
         {'name': 'resnet18', 'num_classes': 200},
         {'name': 'resnet50', 'num_classes': 200},
