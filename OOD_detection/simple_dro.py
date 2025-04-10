@@ -474,11 +474,11 @@ def main():
 
     # Load datasets with tqdm
     print("Loading datasets...")
-    cifar10_train = datasets.CIFAR10(root='/Users/tanmoy/research/data', train=True, download=True, transform=transform)
+    cifar10_train = datasets.CIFAR10(root='./data', train=True, download=True, transform=transform)
     train_loader = DataLoader(cifar10_train, batch_size=32, shuffle=True)
     
-    svhn_test = datasets.SVHN(root='/Users/tanmoy/research/data', split='test', download=True, transform=transform)
-    mnist_test = datasets.MNIST(root='/Users/tanmoy/research/data', train=False, download=True, 
+    svhn_test = datasets.SVHN(root='./data', split='test', download=True, transform=transform)
+    mnist_test = datasets.MNIST(root='./data', train=False, download=True, 
                               transform=transforms.Compose([
                                   transforms.Resize(32),
                                   transforms.Grayscale(3),
