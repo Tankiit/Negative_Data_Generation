@@ -244,14 +244,14 @@ def train_model():
 
     # CIFAR-10 as ID data
     trainset = torchvision.datasets.CIFAR10(
-        root='/Users/cril/tanmoy/research/data', train=True, download=True, transform=train_transform
+        root='./data', train=True, download=True, transform=train_transform
     )
     trainloader = torch.utils.data.DataLoader(
         trainset, batch_size=64, shuffle=True, num_workers=2
     )
     
     testset = torchvision.datasets.CIFAR10(
-        root='/Users/cril/tanmoy/research/data', train=False, download=True, transform=test_transform
+        root='./data', train=False, download=True, transform=test_transform
     )
     testloader = torch.utils.data.DataLoader(
         testset, batch_size=64, shuffle=False, num_workers=2
@@ -259,7 +259,7 @@ def train_model():
     
     # SVHN as OOD data
     oodset = torchvision.datasets.SVHN(
-        root='/Users/cril/tanmoy/research/data', split='test', download=True, transform=train_transform
+        root='./data', split='test', download=True, transform=train_transform
     )
     oodloader = torch.utils.data.DataLoader(
         oodset, batch_size=64, shuffle=False, num_workers=2
