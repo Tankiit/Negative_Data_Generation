@@ -434,7 +434,7 @@ def main():
     import argparse
     
     parser = argparse.ArgumentParser(description="DRO-Based Wasserstein OOD Detection")
-    parser.add_argument('--data-dir', type=str, default='/Users/tanmoy/research/data', help='Data directory')
+    parser.add_argument('--data-dir', type=str, default='./data', help='Data directory')
     parser.add_argument('--batch-size', type=int, default=64, help='Batch size')
     parser.add_argument('--epsilon', type=float, default=1.0, help='Initial Wasserstein radius')
     parser.add_argument('--reg-param', type=float, default=0.1, help='Regularization parameter')
