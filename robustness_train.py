@@ -239,8 +239,8 @@ if __name__ == "__main__":
         std=[0.2023, 0.1994, 0.2010]
     )
     ])
-    train_dataset=CIFAR10(root='/Users/cril/tanmoy/research/data/',train=True,transform=train_transform,download=True)
-    test_dataset=CIFAR10(root='/Users/cril/tanmoy/research/data/',train=False,transform=test_transform,download=True)
+    train_dataset=CIFAR10(root='./data',train=True,transform=train_transform,download=True)
+    test_dataset=CIFAR10(root='./data',train=False,transform=test_transform,download=True)
     train_loader=DataLoader(train_dataset,batch_size=128,shuffle=True,num_workers=4)
     test_loader=DataLoader(test_dataset,batch_size=128,shuffle=False,num_workers=4)
     # Create trainer
