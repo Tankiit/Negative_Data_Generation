@@ -653,7 +653,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='DRO Energy-based Out-of-Distribution Detection')
     
     # Dataset arguments
-    parser.add_argument('--dataset-dir', type=str, default='/home/tanmoy/research/data',
+    parser.add_argument('--dataset-dir', type=str, default='./data',
                         help='Directory where datasets are stored/downloaded (default: ./data)')
     parser.add_argument('--id-dataset', type=str, default='cifar10',
                         choices=['cifar10', 'cifar100', 'svhn', 'mnist', 'fashionmnist',
