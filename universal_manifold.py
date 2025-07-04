@@ -9,7 +9,15 @@ from sklearn.metrics import roc_auc_score
 from sklearn.decomposition import PCA
 from sklearn.covariance import EmpiricalCovariance
 import matplotlib.pyplot as plt
+import seaborn as sns
 from tqdm import tqdm
+import argparse
+import json
+import time
+import os
+from sklearn.manifold import TSNE
+from sklearn.metrics import roc_curve
+import pandas as pd
 
 class UniversalManifoldConstraints:
     """
@@ -299,24 +307,28 @@ class MultiMethodOODDetector:
         
         return grad_norm
 
-def load_cifar10_data(batch_size=128):
+def load_cifar10_data(batch_size=128, data_dir='/Users/mukher74/research/data', 
+                      train_samples=5000, test_samples=1000, ood_samples=1000):
     """Load CIFAR-10 as ID data and SVHN as OOD data"""
     transform = transforms.Compose([
         transforms.ToTensor(),
         transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
     ])
     
+    print(f"Loading data from: {data_dir}")
+    print(f"Using {train_samples} train, {test_samples} test, {ood_samples} OOD samples")
+    
     # CIFAR-10 (ID)
     trainset = torchvision.datasets.CIFAR10(
-        root='/Users/mukher74/research/data', train=True, download=True, transform=transform
+        root=data_dir, train=True, download=True, transform=transform
     )
     testset = torchvision.datasets.CIFAR10(
-        root='/Users/mukher74/research/data', train=False, download=True, transform=transform
+        root=data_dir, train=False, download=True, transform=transform
     )
     
     # Use subset for faster experimentation
-    train_subset = Subset(trainset, range(0, 5000))  # Use 5k samples
-    test_subset = Subset(testset, range(0, 1000))    # Use 1k samples
+    train_subset = Subset(trainset, range(0, min(train_samples, len(trainset))))
+    test_subset = Subset(testset, range(0, min(test_samples, len(testset))))
     
     train_loader = DataLoader(train_subset, batch_size=batch_size, shuffle=True)
     test_loader = DataLoader(test_subset, batch_size=batch_size, shuffle=False)
@@ -324,14 +336,15 @@ def load_cifar10_data(batch_size=128):
     # SVHN (OOD)
     try:
         ood_dataset = torchvision.datasets.SVHN(
-            root='/Users/mukher74/research/data', split='test', download=True, transform=transform
+            root=data_dir, split='test', download=True, transform=transform
         )
-        ood_subset = Subset(ood_dataset, range(0, 1000))  # Use 1k samples
+        ood_subset = Subset(ood_dataset, range(0, min(ood_samples, len(ood_dataset))))
         ood_loader = DataLoader(ood_subset, batch_size=batch_size, shuffle=False)
+        print("Using SVHN as OOD dataset")
     except:
         print("SVHN download failed, using Gaussian noise as OOD")
-        ood_data = torch.randn(1000, 3, 32, 32)
-        ood_labels = torch.zeros(1000)
+        ood_data = torch.randn(ood_samples, 3, 32, 32)
+        ood_labels = torch.zeros(ood_samples)
         ood_dataset = TensorDataset(ood_data, ood_labels)
         ood_loader = DataLoader(ood_dataset, batch_size=batch_size, shuffle=False)
     
@@ -388,12 +401,15 @@ def train_simple_classifier(model, train_loader, epochs=10, device='cuda'):
     criterion = nn.CrossEntropyLoss()
     
     model.train()
-    for epoch in range(epochs):
+    epoch_pbar = tqdm(range(epochs), desc="Training")
+    
+    for epoch in epoch_pbar:
         total_loss = 0
         correct = 0
         total = 0
         
-        for data, targets in tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}"):
+        batch_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{epochs}", leave=False)
+        for data, targets in batch_pbar:
             data, targets = data.to(device), targets.to(device)
             
             optimizer.zero_grad()
@@ -406,19 +422,31 @@ def train_simple_classifier(model, train_loader, epochs=10, device='cuda'):
             _, predicted = outputs.max(1)
             total += targets.size(0)
             correct += predicted.eq(targets).sum().item()
+            
+            # Update progress bar with current loss
+            batch_pbar.set_postfix({'Loss': f'{loss.item():.4f}'})
         
         accuracy = 100. * correct / total
-        print(f"Epoch {epoch+1}: Loss: {total_loss/len(train_loader):.4f}, Accuracy: {accuracy:.2f}%")
+        avg_loss = total_loss / len(train_loader)
+        
+        # Update epoch progress bar
+        epoch_pbar.set_postfix({
+            'Loss': f'{avg_loss:.4f}',
+            'Acc': f'{accuracy:.2f}%'
+        })
+        
+        print(f"Epoch {epoch+1}: Loss: {avg_loss:.4f}, Accuracy: {accuracy:.2f}%")
 
-def evaluate_all_methods(model, manifold_constraints, test_loader, ood_loader, device='cuda'):
+def evaluate_all_methods(model, manifold_constraints, test_loader, ood_loader, device='cuda', args=None):
     """Evaluate multiple OOD detection methods with/without manifold constraints"""
     model.eval()
     detector = MultiMethodOODDetector(manifold_constraints)
     
     results = {}
-    methods = ['energy', 'mahalanobis', 'knn', 'gradient_norm']
+    detailed_results = {}  # For visualization
+    methods = args.methods if args and args.methods else ['energy', 'mahalanobis', 'knn', 'gradient_norm']
     
-    for method_name in methods:
+    for method_name in tqdm(methods, desc="Evaluating methods"):
         print(f"\nEvaluating {method_name} method...")
         
         # Test with and without manifold constraints
@@ -431,14 +459,14 @@ def evaluate_all_methods(model, manifold_constraints, test_loader, ood_loader, d
             # Collect ID scores
             if method_name == 'gradient_norm':
                 # Gradient norm needs gradients, so don't use no_grad context
-                for data, _ in test_loader:
+                for data, _ in tqdm(test_loader, desc=f"ID scores ({method_name})", leave=False):
                     data = data.to(device)
                     features = model.get_features(data)
                     scores = detector.gradient_norm_score(features, model.classifier, use_manifold)
                     id_scores.extend(scores.cpu().numpy())
             else:
                 with torch.no_grad():
-                    for data, _ in test_loader:
+                    for data, _ in tqdm(test_loader, desc=f"ID scores ({method_name})", leave=False):
                         data = data.to(device)
                         features = model.get_features(data)
                         
@@ -454,14 +482,14 @@ def evaluate_all_methods(model, manifold_constraints, test_loader, ood_loader, d
             # Collect OOD scores
             if method_name == 'gradient_norm':
                 # Gradient norm needs gradients, so don't use no_grad context
-                for data, _ in ood_loader:
+                for data, _ in tqdm(ood_loader, desc=f"OOD scores ({method_name})", leave=False):
                     data = data.to(device)
                     features = model.get_features(data)
                     scores = detector.gradient_norm_score(features, model.classifier, use_manifold)
                     ood_scores.extend(scores.cpu().numpy())
             else:
                 with torch.no_grad():
-                    for data, _ in ood_loader:
+                    for data, _ in tqdm(ood_loader, desc=f"OOD scores ({method_name})", leave=False):
                         data = data.to(device)
                         features = model.get_features(data)
                         
@@ -484,34 +512,49 @@ def evaluate_all_methods(model, manifold_constraints, test_loader, ood_loader, d
                 'id_mean': np.mean(id_scores),
                 'ood_mean': np.mean(ood_scores)
             }
+            
+            # Store detailed results for visualization
+            if args and (args.visualize or args.visualize_roc):
+                detailed_results[variant] = {
+                    'y_true': y_true,
+                    'y_scores': y_scores,
+                    'id_scores': id_scores,
+                    'ood_scores': ood_scores
+                }
     
-    return results
+    return results, detailed_results
 
-def demonstrate_universal_manifold_ood():
+def demonstrate_universal_manifold_ood(args):
     """Main demonstration of universal manifold constraints"""
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = args.device if args.device != 'auto' else ('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
     # Load data
     print("Loading CIFAR-10 data...")
-    train_loader, test_loader, ood_loader = load_cifar10_data()
+    train_loader, test_loader, ood_loader = load_cifar10_data(
+        batch_size=args.batch_size,
+        data_dir=args.data_dir,
+        train_samples=args.train_samples,
+        test_samples=args.test_samples,
+        ood_samples=args.ood_samples
+    )
     
     # Create and train model
     print("Creating and training classifier...")
     model = create_simple_resnet()
-    train_simple_classifier(model, train_loader, epochs=5, device=device)
+    train_simple_classifier(model, train_loader, epochs=args.epochs, device=device)
     
     # Learn manifold structure from trained features
     print("Learning manifold structure...")
     manifold_constraints = UniversalManifoldConstraints(
-        manifold_method='autoencoder',  # Try 'pca' for faster experimentation
-        manifold_dim=32
+        manifold_method=args.manifold_method,
+        manifold_dim=args.manifold_dim
     )
     manifold_constraints.fit_manifold(model.get_features, train_loader, device)
     
     # Evaluate all methods
     print("Evaluating OOD detection methods...")
-    results = evaluate_all_methods(model, manifold_constraints, test_loader, ood_loader, device)
+    results, detailed_results = evaluate_all_methods(model, manifold_constraints, test_loader, ood_loader, device, args)
     
     # Print results
     print("\n" + "="*80)
@@ -544,9 +587,394 @@ def demonstrate_universal_manifold_ood():
         print(f"\nAverage AUROC improvement with manifold constraints: +{avg_improvement:.4f}")
         print(f"Methods improved: {sum(1 for imp in improvements if imp > 0)}/{len(improvements)}")
     
+    # Save results if requested
+    if args.save_results:
+        save_results(results, args)
+    
+    # Create visualizations if requested
+    if args.visualize:
+        print("\nCreating comprehensive visualizations...")
+        visualize_results(results, detailed_results, args)
+    
+    if args.visualize_roc and detailed_results:
+        print("\nCreating ROC curve comparisons...")
+        create_roc_comparison(detailed_results, args)
+    
+    if args.visualize_manifold:
+        print("\nCreating manifold structure visualization...")
+        # Extract features for visualization
+        model.eval()
+        all_features = []
+        all_labels = []
+        
+        with torch.no_grad():
+            for data, labels in test_loader:
+                data = data.to(device)
+                features = model.get_features(data)
+                all_features.append(features.cpu())
+                all_labels.append(labels)
+                
+        features_combined = torch.cat(all_features, dim=0)
+        labels_combined = torch.cat(all_labels, dim=0)
+        
+        visualize_manifold_structure(manifold_constraints, features_combined, labels_combined, args)
+    
     return results, manifold_constraints
 
+def save_results(results, args):
+    """Save results to JSON file"""
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    filename = f"manifold_ood_results_{args.manifold_method}_{timestamp}.json"
+    
+    # Add experiment configuration to results
+    config = {
+        'manifold_method': args.manifold_method,
+        'manifold_dim': args.manifold_dim,
+        'epochs': args.epochs,
+        'batch_size': args.batch_size,
+        'device': args.device,
+        'methods': args.methods,
+        'lambda_manifold': args.lambda_manifold
+    }
+    
+    output = {
+        'config': config,
+        'results': results,
+        'timestamp': timestamp
+    }
+    
+    with open(filename, 'w') as f:
+        json.dump(output, f, indent=2, default=str)
+    
+    print(f"\nResults saved to: {filename}")
+
+def visualize_results(results, detailed_results=None, args=None):
+    """Create comprehensive visualizations of OOD detection results"""
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    
+    # Set up the plotting style
+    plt.style.use('default')
+    sns.set_palette("husl")
+    
+    # 1. AUROC Comparison Bar Plot
+    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    fig.suptitle('Universal Manifold-Constrained OOD Detection Results', fontsize=16, fontweight='bold')
+    
+    # Extract data for plotting
+    methods = []
+    without_manifold = []
+    with_manifold = []
+    improvements = []
+    
+    base_methods = ['energy', 'mahalanobis', 'knn', 'gradient_norm']
+    method_names = {'energy': 'Energy', 'mahalanobis': 'Mahalanobis', 
+                    'knn': 'KNN', 'gradient_norm': 'Gradient Norm'}
+    
+    for method in base_methods:
+        if method in args.methods:
+            without_key = f"{method}_without_manifold"
+            with_key = f"{method}_with_manifold"
+            
+            if without_key in results and with_key in results:
+                methods.append(method_names[method])
+                without_manifold.append(results[without_key]['auroc'])
+                with_manifold.append(results[with_key]['auroc'])
+                improvements.append(results[with_key]['auroc'] - results[without_key]['auroc'])
+    
+    # Plot 1: AUROC Comparison
+    x = np.arange(len(methods))
+    width = 0.35
+    
+    bars1 = axes[0,0].bar(x - width/2, without_manifold, width, label='Without Manifold', alpha=0.8)
+    bars2 = axes[0,0].bar(x + width/2, with_manifold, width, label='With Manifold', alpha=0.8)
+    
+    axes[0,0].set_xlabel('Detection Method')
+    axes[0,0].set_ylabel('AUROC')
+    axes[0,0].set_title('AUROC Comparison: With vs Without Manifold Constraints')
+    axes[0,0].set_xticks(x)
+    axes[0,0].set_xticklabels(methods)
+    axes[0,0].legend()
+    axes[0,0].grid(True, alpha=0.3)
+    axes[0,0].set_ylim(0, 1)
+    
+    # Add value labels on bars
+    for bar in bars1:
+        height = bar.get_height()
+        axes[0,0].text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                      f'{height:.3f}', ha='center', va='bottom', fontsize=9)
+    for bar in bars2:
+        height = bar.get_height()
+        axes[0,0].text(bar.get_x() + bar.get_width()/2., height + 0.01,
+                      f'{height:.3f}', ha='center', va='bottom', fontsize=9)
+    
+    # Plot 2: Improvement Bar Chart
+    colors = ['red' if imp < 0 else 'green' for imp in improvements]
+    bars = axes[0,1].bar(methods, improvements, color=colors, alpha=0.7)
+    axes[0,1].set_xlabel('Detection Method')
+    axes[0,1].set_ylabel('AUROC Improvement')
+    axes[0,1].set_title('AUROC Improvement with Manifold Constraints')
+    axes[0,1].axhline(y=0, color='black', linestyle='-', alpha=0.3)
+    axes[0,1].grid(True, alpha=0.3)
+    
+    # Add value labels
+    for bar, imp in zip(bars, improvements):
+        height = bar.get_height()
+        axes[0,1].text(bar.get_x() + bar.get_width()/2., height + (0.01 if height >= 0 else -0.02),
+                      f'{imp:+.3f}', ha='center', va='bottom' if height >= 0 else 'top', fontsize=10)
+    
+    # Plot 3: Score Distribution (if detailed results available)
+    if detailed_results:
+        plot_score_distributions(axes[1,0], detailed_results, methods[0])  # Show first method
+    else:
+        axes[1,0].text(0.5, 0.5, 'Score distributions\n(requires detailed_results)', 
+                      ha='center', va='center', transform=axes[1,0].transAxes)
+        axes[1,0].set_title('Score Distributions')
+    
+    # Plot 4: Method Ranking
+    method_performance = [(m, w, wm, imp) for m, w, wm, imp in zip(methods, without_manifold, with_manifold, improvements)]
+    method_performance.sort(key=lambda x: x[2], reverse=True)  # Sort by with_manifold performance
+    
+    ranked_methods = [x[0] for x in method_performance]
+    ranked_performance = [x[2] for x in method_performance]
+    
+    bars = axes[1,1].barh(ranked_methods, ranked_performance, alpha=0.8)
+    axes[1,1].set_xlabel('AUROC (With Manifold)')
+    axes[1,1].set_title('Method Ranking (With Manifold Constraints)')
+    axes[1,1].grid(True, alpha=0.3)
+    axes[1,1].set_xlim(0, 1)
+    
+    # Add value labels
+    for bar, perf in zip(bars, ranked_performance):
+        width = bar.get_width()
+        axes[1,1].text(width + 0.01, bar.get_y() + bar.get_height()/2.,
+                      f'{perf:.3f}', ha='left', va='center', fontsize=10)
+    
+    plt.tight_layout()
+    
+    # Save the plot
+    plot_filename = f"manifold_ood_visualization_{args.manifold_method}_{timestamp}.png"
+    plt.savefig(plot_filename, dpi=300, bbox_inches='tight')
+    print(f"Visualization saved to: {plot_filename}")
+    
+    if args and not args.no_show_plots:
+        plt.show()
+    else:
+        plt.close()
+
+def plot_score_distributions(ax, detailed_results, method_name):
+    """Plot score distributions for ID vs OOD"""
+    if method_name.lower() in detailed_results:
+        data = detailed_results[method_name.lower()]
+        
+        # Plot histograms
+        ax.hist(data['id_scores'], bins=30, alpha=0.6, label='ID', density=True)
+        ax.hist(data['ood_scores'], bins=30, alpha=0.6, label='OOD', density=True)
+        
+        ax.set_xlabel('OOD Score')
+        ax.set_ylabel('Density')
+        ax.set_title(f'{method_name} Score Distribution')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+def visualize_manifold_structure(manifold_constraints, features, labels, args):
+    """Visualize the learned manifold structure"""
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    fig.suptitle(f'Manifold Structure Visualization ({args.manifold_method.upper()})', fontsize=16)
+    
+    # Convert to numpy for sklearn
+    if torch.is_tensor(features):
+        features_np = features.detach().cpu().numpy()
+    else:
+        features_np = features
+        
+    if torch.is_tensor(labels):
+        labels_np = labels.detach().cpu().numpy()
+    else:
+        labels_np = labels
+    
+    # 1. Original feature space (first 2 PCA components)
+    from sklearn.decomposition import PCA
+    pca_vis = PCA(n_components=2)
+    features_pca = pca_vis.fit_transform(features_np)
+    
+    scatter = axes[0].scatter(features_pca[:, 0], features_pca[:, 1], c=labels_np, 
+                             cmap='viridis', alpha=0.6, s=20)
+    axes[0].set_title('Original Feature Space (PCA)')
+    axes[0].set_xlabel(f'PC1 ({pca_vis.explained_variance_ratio_[0]:.1%} var)')
+    axes[0].set_ylabel(f'PC2 ({pca_vis.explained_variance_ratio_[1]:.1%} var)')
+    plt.colorbar(scatter, ax=axes[0])
+    
+    # 2. Manifold distance visualization
+    manifold_distances = manifold_constraints.manifold_distance(torch.tensor(features_np))
+    if torch.is_tensor(manifold_distances):
+        manifold_distances = manifold_distances.detach().cpu().numpy()
+    
+    scatter2 = axes[1].scatter(features_pca[:, 0], features_pca[:, 1], c=manifold_distances, 
+                              cmap='plasma', alpha=0.6, s=20)
+    axes[1].set_title('Manifold Distance')
+    axes[1].set_xlabel(f'PC1 ({pca_vis.explained_variance_ratio_[0]:.1%} var)')
+    axes[1].set_ylabel(f'PC2 ({pca_vis.explained_variance_ratio_[1]:.1%} var)')
+    plt.colorbar(scatter2, ax=axes[1])
+    
+    # 3. t-SNE visualization
+    print("Computing t-SNE embedding...")
+    tsne = TSNE(n_components=2, random_state=42, perplexity=min(30, len(features_np)//4))
+    features_tsne = tsne.fit_transform(features_np[:min(1000, len(features_np))])  # Limit for speed
+    labels_subset = labels_np[:min(1000, len(labels_np))]
+    
+    scatter3 = axes[2].scatter(features_tsne[:, 0], features_tsne[:, 1], c=labels_subset, 
+                              cmap='viridis', alpha=0.6, s=20)
+    axes[2].set_title('t-SNE Embedding')
+    axes[2].set_xlabel('t-SNE 1')
+    axes[2].set_ylabel('t-SNE 2')
+    plt.colorbar(scatter3, ax=axes[2])
+    
+    plt.tight_layout()
+    
+    # Save manifold visualization
+    manifold_plot_filename = f"manifold_structure_{args.manifold_method}_{timestamp}.png"
+    plt.savefig(manifold_plot_filename, dpi=300, bbox_inches='tight')
+    print(f"Manifold visualization saved to: {manifold_plot_filename}")
+    
+    if args and not args.no_show_plots:
+        plt.show()
+    else:
+        plt.close()
+
+def create_roc_comparison(results_with_scores, args):
+    """Create ROC curve comparison plot"""
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    
+    fig, axes = plt.subplots(2, 2, figsize=(15, 12))
+    fig.suptitle('ROC Curve Comparisons: With vs Without Manifold Constraints', fontsize=16)
+    
+    base_methods = ['energy', 'mahalanobis', 'knn', 'gradient_norm']
+    method_names = {'energy': 'Energy', 'mahalanobis': 'Mahalanobis', 
+                    'knn': 'KNN', 'gradient_norm': 'Gradient Norm'}
+    
+    for i, method in enumerate(base_methods):
+        if method in args.methods:
+            ax = axes[i//2, i%2]
+            
+            for use_manifold in [False, True]:
+                variant = f"{method}_{'with' if use_manifold else 'without'}_manifold"
+                if variant in results_with_scores:
+                    y_true = results_with_scores[variant]['y_true']
+                    y_scores = results_with_scores[variant]['y_scores']
+                    
+                    fpr, tpr, _ = roc_curve(y_true, y_scores)
+                    auroc = roc_auc_score(y_true, y_scores)
+                    
+                    label = f"{'With' if use_manifold else 'Without'} Manifold (AUROC: {auroc:.3f})"
+                    ax.plot(fpr, tpr, label=label, linewidth=2)
+            
+            ax.plot([0, 1], [0, 1], 'k--', alpha=0.5)
+            ax.set_xlabel('False Positive Rate')
+            ax.set_ylabel('True Positive Rate')
+            ax.set_title(f'{method_names[method]} ROC Curves')
+            ax.legend()
+            ax.grid(True, alpha=0.3)
+    
+    plt.tight_layout()
+    
+    roc_filename = f"roc_comparison_{args.manifold_method}_{timestamp}.png"
+    plt.savefig(roc_filename, dpi=300, bbox_inches='tight')
+    print(f"ROC comparison saved to: {roc_filename}")
+    
+    if args and not args.no_show_plots:
+        plt.show()
+    else:
+        plt.close()
+
+def parse_arguments():
+    """Parse command line arguments"""
+    parser = argparse.ArgumentParser(
+        description="Universal Manifold-Constrained OOD Detection",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    
+    # Data and training arguments
+    parser.add_argument('--batch-size', type=int, default=128,
+                        help='Batch size for training and evaluation')
+    parser.add_argument('--epochs', type=int, default=5,
+                        help='Number of training epochs')
+    parser.add_argument('--device', type=str, default='auto', 
+                        choices=['auto', 'cuda', 'cpu'],
+                        help='Device to use for computation')
+    
+    # Manifold arguments
+    parser.add_argument('--manifold-method', type=str, default='autoencoder',
+                        choices=['pca', 'autoencoder'],
+                        help='Method for learning manifold structure')
+    parser.add_argument('--manifold-dim', type=int, default=32,
+                        help='Dimensionality of the learned manifold')
+    parser.add_argument('--lambda-manifold', type=float, default=1.0,
+                        help='Weight for manifold regularization term')
+    
+    # Evaluation arguments
+    parser.add_argument('--methods', nargs='+', 
+                        default=['energy', 'mahalanobis', 'knn', 'gradient_norm'],
+                        choices=['energy', 'mahalanobis', 'knn', 'gradient_norm'],
+                        help='OOD detection methods to evaluate')
+    
+    # Output arguments
+    parser.add_argument('--save-results', action='store_true',
+                        help='Save results to JSON file')
+    parser.add_argument('--verbose', action='store_true',
+                        help='Enable verbose output')
+    parser.add_argument('--no-progress', action='store_true',
+                        help='Disable progress bars')
+    
+    # Visualization arguments
+    parser.add_argument('--visualize', action='store_true',
+                        help='Create comprehensive visualizations')
+    parser.add_argument('--visualize-manifold', action='store_true',
+                        help='Visualize manifold structure')
+    parser.add_argument('--visualize-roc', action='store_true',
+                        help='Create ROC curve comparisons')
+    parser.add_argument('--no-show-plots', action='store_true',
+                        help='Save plots but do not display them')
+    parser.add_argument('--plot-format', type=str, default='png',
+                        choices=['png', 'pdf', 'svg'],
+                        help='Format for saved plots')
+    
+    # Data arguments
+    parser.add_argument('--data-dir', type=str, default='/Users/mukher74/research/data',
+                        help='Directory to store datasets')
+    parser.add_argument('--train-samples', type=int, default=5000,
+                        help='Number of training samples to use')
+    parser.add_argument('--test-samples', type=int, default=1000,
+                        help='Number of test samples to use')
+    parser.add_argument('--ood-samples', type=int, default=1000,
+                        help='Number of OOD samples to use')
+    
+    return parser.parse_args()
+
 if __name__ == "__main__":
-    results, manifold_constraints = demonstrate_universal_manifold_ood()
-    print("\nUniversal manifold OOD detection completed!")
-    print("Key insight: Manifold constraints improve MULTIPLE detection methods, not just energy!")
+    args = parse_arguments()
+
+    start_time = time.time()
+    
+    try:
+        results, manifold_constraints = demonstrate_universal_manifold_ood(args)
+        
+        elapsed_time = time.time() - start_time
+        print(f"\nExperiment completed in {elapsed_time:.2f} seconds")
+        print("\nKey insight: Manifold constraints improve MULTIPLE detection methods, not just energy!")
+        
+        if args.verbose:
+            print("\nDetailed Results:")
+            for method, metrics in results.items():
+                print(f"  {method}:")
+                for metric, value in metrics.items():
+                    print(f"    {metric}: {value:.4f}")
+                    
+    except KeyboardInterrupt:
+        print("\nExperiment interrupted by user")
+    except Exception as e:
+        print(f"\nError during experiment: {e}")
+        if args.verbose:
+            import traceback
+            traceback.print_exc()
